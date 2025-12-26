@@ -388,24 +388,34 @@ def api_stores():
         params = []
         
         if search:
-            where_clauses.append("(s.name LIKE ? OR s.domain LIKE ? OR s.url LIKE ?)")
+            where_clauses.append("(name LIKE ? OR domain LIKE ? OR url LIKE ?)")
             search_param = f"%{search}%"
             params.extend([search_param, search_param, search_param])
         
         if country:
-            where_clauses.append("s.country = ?")
+            where_clauses.append("country = ?")
             params.append(country)
         
         if active_only:
-            where_clauses.append("s.active = 1")
+            where_clauses.append("active = 1")
         
         where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
         
-        # Get total count
+        # Get total count (use simple query without alias)
         cursor.execute(f"SELECT COUNT(*) FROM stores WHERE {where_sql}", params)
         total = cursor.fetchone()[0]
         
-        # Get stores
+        # Get stores (rebuild where clause with table alias for JOIN query)
+        where_clauses_aliased = []
+        if search:
+            where_clauses_aliased.append("(s.name LIKE ? OR s.domain LIKE ? OR s.url LIKE ?)")
+        if country:
+            where_clauses_aliased.append("s.country = ?")
+        if active_only:
+            where_clauses_aliased.append("s.active = 1")
+        
+        where_sql_aliased = " AND ".join(where_clauses_aliased) if where_clauses_aliased else "1=1"
+        
         offset = (page - 1) * per_page
         query = f"""
             SELECT 
@@ -414,7 +424,7 @@ def api_stores():
                 COUNT(c.id) as coupon_count
             FROM stores s
             LEFT JOIN coupons c ON s.store_id = c.store_id
-            WHERE {where_sql}
+            WHERE {where_sql_aliased}
             GROUP BY s.store_id
             ORDER BY s.updated DESC
             LIMIT ? OFFSET ?
