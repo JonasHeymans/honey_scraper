@@ -89,25 +89,28 @@ class HoneyScraper:
         # Create coupons table
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS coupons (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                store_id TEXT,
-                code TEXT,
-                deal_id TEXT,
-                description TEXT,
-                created INTEGER,
-                expires INTEGER,
-                exclusive INTEGER,
-                hidden INTEGER,
-                restrictions TEXT,
-                rank INTEGER,
-                applied_acc_count INTEGER,
-                applied_acc_last_ts INTEGER,
-                applied_acc_last_discount REAL,
-                url TEXT,
-                meta_json TEXT,
-                sources_json TEXT,
-                tags_json TEXT,
-                FOREIGN KEY (store_id) REFERENCES stores(store_id)
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            store_id TEXT,
+            coupon_key TEXT,            -- NEW
+            code TEXT,
+            deal_id TEXT,
+            description TEXT,
+            created INTEGER,
+            expires INTEGER,
+            exclusive INTEGER,
+            hidden INTEGER,
+            restrictions TEXT,
+            rank INTEGER,
+            applied_acc_count INTEGER,
+            applied_acc_last_ts INTEGER,
+            applied_acc_last_discount REAL,
+            url TEXT,
+            meta_json TEXT,
+            sources_json TEXT,
+            tags_json TEXT,
+            FOREIGN KEY (store_id) REFERENCES stores(store_id),
+            UNIQUE(store_id, coupon_key) -- NEW
+
             )
         """)
         
@@ -217,17 +220,17 @@ class HoneyScraper:
             ))
             
             # Insert coupons
-            cursor.execute("DELETE FROM coupons WHERE store_id = ?", (store_id,))
             for coupon in details.get('publicCoupons', []):
+                ckey = self._coupon_key(coupon)
                 cursor.execute("""
-                    INSERT INTO coupons (
-                        store_id, code, deal_id, description, created, expires,
+                    INSERT OR REPLACE INTO coupons (
+                        store_id, coupon_key, code, deal_id, description, created, expires,
                         exclusive, hidden, restrictions, rank, applied_acc_count,
                         applied_acc_last_ts, applied_acc_last_discount, url,
                         meta_json, sources_json, tags_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
-                    store_id, coupon.get('code'), coupon.get('dealId'),
+                    store_id, ckey, coupon.get('code'), coupon.get('dealId'),
                     coupon.get('description'), coupon.get('created'), coupon.get('expires'),
                     1 if coupon.get('exclusive') else 0,
                     1 if coupon.get('hidden') else 0,
@@ -238,7 +241,7 @@ class HoneyScraper:
                     json.dumps(coupon.get('sources', [])),
                     json.dumps(coupon.get('tags', []))
                 ))
-            
+
             # Insert partial URLs
             cursor.execute("DELETE FROM partial_urls WHERE store_id = ?", (store_id,))
             for pu in details.get('partialUrls', []):
@@ -645,6 +648,17 @@ class HoneyScraper:
         for country, count in stats['top_countries'].items():
             print(f"  {country}: {count:,}")
         print(f"{'='*60}\n")
+
+    def _coupon_key(self, coupon: Dict) -> str:
+        # Prefer dealId if present; otherwise derive a stable signature
+        deal_id = coupon.get("dealId") or ""
+        code = coupon.get("code") or ""
+        desc = coupon.get("description") or ""
+        created = str(coupon.get("created") or "")
+        expires = str(coupon.get("expires") or "")
+        raw = f"{deal_id}|{code}|{desc}|{created}|{expires}"
+        return hashlib.md5(raw.encode("utf-8")).hexdigest()
+
 
 def main():
     parser = argparse.ArgumentParser()

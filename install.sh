@@ -199,7 +199,7 @@ create_systemd_service() {
     print_header "Creating Systemd Service"
     
     local service_file="/etc/systemd/system/$SERVICE_NAME.service"
-    local venv_python="$INSTALL_DIR/venv/bin/python"
+    local venv_python="$INSTALL_DIR/venv/bin/python3"
     
     if [[ -f "$service_file" ]]; then
         print_warning "Service file already exists"
