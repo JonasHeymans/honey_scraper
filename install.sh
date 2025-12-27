@@ -224,7 +224,12 @@ Type=simple
 User=root
 WorkingDirectory=/root/honey_scraper
 Environment="PATH=/root/honey_scraper/venv/bin:/usr/local/bin:/usr/bin:/bin"
-ExecStart=/root/honey_scraper/venv/bin/python3 /root/honey_scraper/scraper.py --mode auto --workers 10 --worker-id 1 --db /root/honey_scraper/honey_stores_1.db --delay 0.5
+ExecStart=/opt/honey/venv/bin/python /opt/honey/scraper.py \
+  --mode auto \
+  --workers 10 \
+  --worker-id %i \
+  --db /opt/honey/data/honey_stores_%i.db \
+  --delay 0.5
 Restart=on-failure
 RestartSec=10
 StandardOutput=append:/root/honey_scraper/scraper.log
