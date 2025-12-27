@@ -711,8 +711,14 @@ main() {
     read -p "Would you like to start the scraper service now? (y/N): " -n 1 -r
     echo ""
     if [[ $REPLY =~ ^[Yy]$ ]]; then
-        sudo systemctl enable $SERVICE_NAME
-        sudo systemctl start $SERVICE_NAME
+        WORKER_ID_DEFAULT="${WORKER_ID:-0}"
+
+        sudo systemctl enable "${SERVICE_NAME}@${WORKER_ID_DEFAULT}"
+        sudo systemctl start "${SERVICE_NAME}@${WORKER_ID_DEFAULT}"
+        print_success "Scraper service started and enabled: ${SERVICE_NAME}@${WORKER_ID_DEFAULT}"
+        print_info "Check status with: sudo systemctl status ${SERVICE_NAME}@${WORKER_ID_DEFAULT}"
+        print_info "View logs with: tail -f $INSTALL_DIR/scraper_${WORKER_ID_DEFAULT}.log"
+
         print_success "Scraper service started and enabled"
         echo ""
         print_info "Check status with: sudo systemctl status $SERVICE_NAME"
