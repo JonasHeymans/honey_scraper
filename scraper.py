@@ -11,28 +11,39 @@ from typing import Dict, List, Optional
 import csv
 from datetime import datetime
 import sqlite3
+import hashlib
+import argparse
 
 
 class HoneyScraper:
     """Scraper for Honey store data"""
     
     BASE_URL = "https://d.joinhoney.com"
-    
-    def __init__(self, delay: float = 0.5, db_path: str = "honey_stores.db"):
-        """
-        Initialize scraper
-        
-        Args:
-            delay: Delay between requests in seconds to be respectful
-            db_path: Path to SQLite database file
-        """
+
+    def __init__(
+            self,
+            delay: float = 0.5,
+            db_path: str = "honey_stores.db",
+            worker_id: int = 0,
+            num_workers: int = 1
+    ):
         self.delay = delay
         self.db_path = db_path
+        self.worker_id = worker_id
+        self.num_workers = num_workers
+
         self.session = requests.Session()
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         })
         self._init_database()
+
+    def _domain_belongs_to_this_worker(self, domain: str) -> bool:
+        # Stable hash -> int
+        h = hashlib.md5(domain.encode("utf-8")).hexdigest()
+        shard = int(h, 16) % self.num_workers
+        return shard == self.worker_id
+
     
     def _init_database(self):
         """Initialize SQLite database with schema"""
@@ -408,10 +419,18 @@ class HoneyScraper:
         
         # Get all domains
         domains = self.get_supported_domains()
+
         if not domains:
             print("No domains found. Exiting.")
             return
-        
+
+        # Shard domains across workers
+        if self.num_workers > 1:
+            before = len(domains)
+            domains = [d for d in domains if self._domain_belongs_to_this_worker(d)]
+            print(
+                f"Sharding enabled: worker {self.worker_id}/{self.num_workers} -> {len(domains)} of {before} domains")
+
         if max_domains:
             domains = domains[:max_domains]
             print(f"Limited to first {max_domains} domains")
@@ -627,87 +646,37 @@ class HoneyScraper:
             print(f"  {country}: {count:,}")
         print(f"{'='*60}\n")
 
-
 def main():
-    """Main execution"""
-    import sys
-    
-    scraper = HoneyScraper(delay=0.5)  # 0.5 second delay between requests
-    
-    # Check for command line arguments (for service mode)
-    if len(sys.argv) > 1:
-        mode = sys.argv[1].lower()
-        if mode in ['auto', 'service', 'resume']:
-            print("Running in automatic mode (service/resume)...")
-            scraper.scrape_all_stores(skip_existing=True)
-            scraper.print_stats()
-            return
-        elif mode == 'stats':
-            scraper.print_stats()
-            return
-        elif mode.startswith('limit='):
-            try:
-                limit = int(mode.split('=')[1])
-                scraper.scrape_all_stores(max_domains=limit)
-                scraper.print_stats()
-                return
-            except (ValueError, IndexError):
-                print(f"Invalid limit: {mode}")
-                sys.exit(1)
-    
-    # Interactive mode
-    print("=" * 60)
-    print("HONEY STORE SCRAPER")
-    print("=" * 60)
-    print("\nChoose action:")
-    print("1. Start scraping (test mode - 10 domains)")
-    print("2. Start scraping (full - all ~178k domains)")
-    print("3. Start scraping (custom limit)")
-    print("4. View database statistics")
-    print("5. Export database to JSON")
-    print("6. Export database to CSV")
-    print("7. Resume scraping (continue from where left off)")
-    
-    choice = input("\nEnter choice (1-7): ").strip()
-    
-    if choice == "1":
-        scraper.scrape_all_stores(max_domains=10)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--delay", type=float, default=0.5)
+    parser.add_argument("--db", type=str, default="honey_stores.db")
+    parser.add_argument("--worker-id", type=int, default=0)
+    parser.add_argument("--workers", type=int, default=1)
+    parser.add_argument("--mode", type=str, default="auto", choices=["auto", "stats", "limit"])
+    parser.add_argument("--limit", type=int, default=None)
+
+    args = parser.parse_args()
+
+    scraper = HoneyScraper(
+        delay=args.delay,
+        db_path=args.db,
+        worker_id=args.worker_id,
+        num_workers=args.workers
+    )
+
+    if args.mode == "stats":
         scraper.print_stats()
-    elif choice == "2":
-        confirm = input("This will take many hours. Continue? (yes/no): ").strip().lower()
-        if confirm == "yes":
-            scraper.scrape_all_stores()
-            scraper.print_stats()
-        else:
-            print("Cancelled.")
-    elif choice == "3":
-        try:
-            limit = int(input("Enter number of domains to scrape: ").strip())
-            scraper.scrape_all_stores(max_domains=limit)
-            scraper.print_stats()
-        except ValueError:
-            print("Invalid number")
-    elif choice == "4":
+        return
+
+    if args.mode == "limit":
+        scraper.scrape_all_stores(max_domains=args.limit, skip_existing=True)
         scraper.print_stats()
-    elif choice == "5":
-        output = input("Output file (default: honey_stores.json): ").strip() or "honey_stores.json"
-        limit_str = input("Limit (press Enter for all): ").strip()
-        limit = int(limit_str) if limit_str else None
-        scraper.export_to_json(output, limit)
-    elif choice == "6":
-        output = input("Output file (default: honey_stores.csv): ").strip() or "honey_stores.csv"
-        limit_str = input("Limit (press Enter for all): ").strip()
-        limit = int(limit_str) if limit_str else None
-        scraper.export_to_csv(output, limit)
-    elif choice == "7":
-        confirm = input("Resume scraping all remaining domains? (yes/no): ").strip().lower()
-        if confirm == "yes":
-            scraper.scrape_all_stores(skip_existing=True)
-            scraper.print_stats()
-        else:
-            print("Cancelled.")
-    else:
-        print("Invalid choice")
+        return
+
+    # auto
+    scraper.scrape_all_stores(max_domains=None, skip_existing=True)
+    scraper.print_stats()
+
 
 
 if __name__ == "__main__":
