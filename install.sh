@@ -711,22 +711,25 @@ main() {
     read -p "Would you like to start the scraper service now? (y/N): " -n 1 -r
     echo ""
     if [[ $REPLY =~ ^[Yy]$ ]]; then
-        WORKER_ID_DEFAULT="${WORKER_ID:-0}"
+        WORKER_ID="${WORKER_ID:-0}"
 
-        sudo systemctl enable "${SERVICE_NAME}@${WORKER_ID_DEFAULT}"
-        sudo systemctl start "${SERVICE_NAME}@${WORKER_ID_DEFAULT}"
-        print_success "Scraper service started and enabled: ${SERVICE_NAME}@${WORKER_ID_DEFAULT}"
-        print_info "Check status with: sudo systemctl status ${SERVICE_NAME}@${WORKER_ID_DEFAULT}"
-        print_info "View logs with: tail -f $INSTALL_DIR/scraper_${WORKER_ID_DEFAULT}.log"
+        sudo systemctl daemon-reload
 
-        print_success "Scraper service started and enabled"
-        echo ""
-        print_info "Check status with: sudo systemctl status $SERVICE_NAME"
-        print_info "View logs with: tail -f $INSTALL_DIR/scraper.log"
+        # Avoid accidentally running worker 0 if this droplet is not worker 0
+        if [[ "$WORKER_ID" != "0" ]]; then
+            sudo systemctl disable --now "${SERVICE_NAME}@0.service" 2>/dev/null || true
+        fi
+
+        sudo systemctl enable --now "${SERVICE_NAME}@${WORKER_ID}.service"
+
+        print_success "Scraper service started and enabled: ${SERVICE_NAME}@${WORKER_ID}.service"
+        print_info "Check status with: sudo systemctl status ${SERVICE_NAME}@${WORKER_ID} --no-pager"
+        print_info "View logs with: journalctl -u ${SERVICE_NAME}@${WORKER_ID} -f"
     else
-        print_info "You can start it later with: sudo systemctl start $SERVICE_NAME"
-        print_info "Or use the web dashboard to control scraping"
+        print_info "You can start it later with:"
+        print_info "  sudo systemctl enable --now ${SERVICE_NAME}@${WORKER_ID:-0}.service"
     fi
+
     
     echo ""
     print_success "Installation complete!"
