@@ -221,25 +221,21 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=$SERVICE_USER
-WorkingDirectory=$INSTALL_DIR
-Environment="PATH=$INSTALL_DIR/venv/bin:/usr/local/bin:/usr/bin:/bin"
-ExecStart=$venv_python $INSTALL_DIR/scraper.py auto
+User=root
+WorkingDirectory=/root/honey_scraper
+Environment="PATH=/root/honey_scraper/venv/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart=/root/honey_scraper/venv/bin/python3 /root/honey_scraper/scraper.py --mode auto --workers 10 --worker-id 1 --db /root/honey_scraper/honey_stores_1.db --delay 0.5
 Restart=on-failure
 RestartSec=10
-StandardOutput=append:$INSTALL_DIR/scraper.log
-StandardError=append:$INSTALL_DIR/scraper_error.log
+StandardOutput=append:/root/honey_scraper/scraper.log
+StandardError=append:/root/honey_scraper/scraper_error.log
 
 # Security settings
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=$INSTALL_DIR
 
 [Install]
 WantedBy=multi-user.target
 EOF
+
 
     print_success "Service file created"
     
