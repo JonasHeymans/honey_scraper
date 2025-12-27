@@ -196,54 +196,43 @@ install_python_dependencies() {
 }
 
 create_systemd_service() {
-    print_header "Creating Systemd Service"
-    
-    local service_file="/etc/systemd/system/$SERVICE_NAME.service"
+    print_header "Creating Systemd Service (template)"
+
+    local template_file="/etc/systemd/system/${SERVICE_NAME}@.service"
     local venv_python="$INSTALL_DIR/venv/bin/python3"
-    
-    if [[ -f "$service_file" ]]; then
-        print_warning "Service file already exists"
-        read -p "Overwrite it? (y/N): " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            print_info "Skipping service creation"
-            return 0
-        fi
-    fi
-    
-    print_info "Creating service file at $service_file..."
-    
-    sudo tee "$service_file" > /dev/null <<EOF
+
+    print_info "Writing template unit: $template_file"
+
+    sudo tee "$template_file" > /dev/null <<EOF
 [Unit]
-Description=Honey Store Scraper Service
+Description=Honey Store Scraper Service (worker %i)
 After=network.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/root/honey_scraper
-Environment="PATH=/root/honey_scraper/venv/bin:/usr/local/bin:/usr/bin:/bin"
-ExecStart=/opt/honey/venv/bin/python /opt/honey/scraper.py \
-  --mode auto \
-  --workers 10 \
-  --worker-id %i \
-  --db /opt/honey/data/honey_stores_%i.db \
-  --delay 0.5
+WorkingDirectory=$INSTALL_DIR
+Environment="PATH=$INSTALL_DIR/venv/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart=$venv_python $INSTALL_DIR/scraper.py --mode auto --workers 10 --worker-id %i --db $INSTALL_DIR/honey_stores_%i.db --delay 0.5
 Restart=on-failure
 RestartSec=10
-StandardOutput=append:/root/honey_scraper/scraper.log
-StandardError=append:/root/honey_scraper/scraper_error.log
-
-# Security settings
+StandardOutput=append:$INSTALL_DIR/scraper_%i.log
+StandardError=append:$INSTALL_DIR/scraper_%i_err.log
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
+    print_success "Template unit created: ${SERVICE_NAME}@.service"
 
-    print_success "Service file created"
-    
+    # Optional: remove any old non-template unit to avoid confusion.
+    # (Fresh install should be clean anyway, but this prevents leftovers.)
+    if [[ -f "/etc/systemd/system/${SERVICE_NAME}.service" ]]; then
+        print_warning "Removing legacy non-template unit: /etc/systemd/system/${SERVICE_NAME}.service"
+        sudo rm -f "/etc/systemd/system/${SERVICE_NAME}.service"
+    fi
+
     print_info "Reloading systemd daemon..."
     sudo systemctl daemon-reload
     print_success "Systemd daemon reloaded"
