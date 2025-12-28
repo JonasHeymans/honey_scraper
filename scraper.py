@@ -933,7 +933,7 @@ def main():
         "--mode",
         type=str,
         default="auto",
-        choices=["auto", "stats", "limit", "refresh-coupons"]
+        choices=["auto", "stats", "limit", "refresh-coupons", "scrape-recipes", "recipes-worker"]
     )
     parser.add_argument("--refresh-hours", type=float, default=6.0)
     parser.add_argument("--refresh-limit", type=int, default=None)
@@ -966,6 +966,28 @@ def main():
 
         scraper.print_stats()
         return
+
+    if args.mode == "scrape-recipes":
+        # One-shot: refresh coupons BUT also refresh recipes, using refresh-hours/limit filters
+        scraper.refresh_coupons(
+            refresh_hours=args.refresh_hours,
+            limit=args.refresh_limit,
+            refresh_recipes=True,
+        )
+        scraper.print_stats()
+        return
+
+    if args.mode == "recipes-worker":
+        # Long-running: keep refreshing recipes continuously
+        # Uses refresh_hours/limit each cycle; sleep between cycles
+        while True:
+            scraper.refresh_coupons(
+                refresh_hours=args.refresh_hours,
+                limit=args.refresh_limit,
+                refresh_recipes=True,
+            )
+            time.sleep(max(args.delay, 1.0))
+
 
     # auto
     scraper.scrape_all_stores(max_domains=None, skip_existing=True)
