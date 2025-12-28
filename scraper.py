@@ -152,6 +152,24 @@ class HoneyScraper:
             )
         """)
 
+        # Create store_recipes table (latest recipe per store)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS store_recipes (
+                store_id TEXT PRIMARY KEY,
+                scope TEXT,
+                country TEXT,
+                engine TEXT,
+                status TEXT,
+                activated_at TEXT,
+                created_at TEXT,
+                updated_at TEXT,
+                raw_hash TEXT NOT NULL,
+                raw_json TEXT NOT NULL,
+                recipe_last_fetched INTEGER NOT NULL,
+                FOREIGN KEY (store_id) REFERENCES stores(store_id)
+            )
+        """)
+
         # Create indices for better query performance
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_stores_domain ON stores(domain)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_stores_country ON stores(country)")
@@ -162,10 +180,32 @@ class HoneyScraper:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_usage_reports_store ON coupon_usage_reports(store_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_usage_reports_code ON coupon_usage_reports(code)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_stores_last_refreshed ON stores(store_last_refreshed)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_store_recipes_country ON store_recipes(country)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_store_recipes_status ON store_recipes(status)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_store_recipes_last_fetched ON store_recipes(recipe_last_fetched)")
 
         conn.commit()
         conn.close()
         print(f"Database initialized: {self.db_path}")
+
+    def _json_hash(self, obj: Dict) -> str:
+        # Stable hash for change detection (sorting keys)
+        s = json.dumps(obj, sort_keys=True, separators=(",", ":"))
+        return hashlib.md5(s.encode("utf-8")).hexdigest()
+
+    def _extract_mongo_date(self, v) -> Optional[str]:
+        """
+        UI sometimes shows: {"$date": "2022-11-18T04:07:25.214Z"}
+        Sometimes you may get ISO directly.
+        Store as ISO string (TEXT) for now.
+        """
+        if v is None:
+            return None
+        if isinstance(v, str):
+            return v
+        if isinstance(v, dict) and "$date" in v:
+            return v["$date"]
+        return str(v)
 
     def _store_exists(self, store_id: str) -> bool:
         """Check if store already exists in database"""
@@ -184,6 +224,88 @@ class HoneyScraper:
         exists = cursor.fetchone() is not None
         conn.close()
         return exists
+
+    def get_store_recipe(self, store_id: str, full: bool = True) -> Optional[Dict]:
+        """
+        Fetch store recipe/config from v.joinhoney.com
+        Example: https://v.joinhoney.com/recipe/stores/<store_id>?full=true
+        """
+        url = f"https://v.joinhoney.com/recipe/stores/{store_id}"
+        params = {"full": "true"} if full else {}
+        max_retries = 3
+        retry_delay = self.delay
+
+        for attempt in range(max_retries):
+            try:
+                time.sleep(retry_delay)
+                resp = self.session.get(url, params=params, timeout=30)
+
+                if resp.status_code == 429:
+                    retry_delay *= 2
+                    print(f"    ⚠️ Rate limited (recipe). Waiting {retry_delay}s before retry {attempt + 1}/{max_retries}...")
+                    time.sleep(retry_delay)
+                    continue
+
+                if resp.status_code == 404:
+                    return None
+
+                resp.raise_for_status()
+                return resp.json()
+
+            except requests.exceptions.Timeout:
+                print(f"    ⚠️ Timeout (recipe) for store {store_id}. Retry {attempt + 1}/{max_retries}...")
+                retry_delay *= 1.5
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                    continue
+
+            except requests.exceptions.RequestException as e:
+                print(f"    ⚠️ Request error (recipe) for store {store_id}: {e}. Retry {attempt + 1}/{max_retries}...")
+                retry_delay *= 1.5
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                    continue
+
+            except Exception as e:
+                print(f"Error fetching recipe for store {store_id}: {e}")
+                break
+
+        return None
+
+    def _save_recipe_to_db(self, store_id: str, recipe: Dict):
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        try:
+            raw_hash = self._json_hash(recipe)
+            cursor.execute(
+                """
+                INSERT OR REPLACE INTO store_recipes (
+                    store_id, scope, country, engine, status,
+                    activated_at, created_at, updated_at,
+                    raw_hash, raw_json, recipe_last_fetched
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    store_id,
+                    recipe.get("scope"),
+                    recipe.get("country"),
+                    recipe.get("engine"),
+                    recipe.get("status"),
+                    self._extract_mongo_date(recipe.get("activated_at") or recipe.get("activatedAt")),
+                    self._extract_mongo_date(recipe.get("created_at") or recipe.get("createdAt")),
+                    self._extract_mongo_date(recipe.get("updated_at") or recipe.get("updatedAt")),
+                    raw_hash,
+                    json.dumps(recipe),
+                    int(time.time() * 1000),
+                ),
+            )
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            print(f"Error saving recipe for store {store_id}: {e}")
+        finally:
+            conn.close()
+
 
     def _save_store_to_db(
             self,
@@ -527,25 +649,31 @@ class HoneyScraper:
 
             # Get details for each store
             for mapping in store_mappings:
+                domain_store_count += 1
+
                 store_id = mapping.get("storeId")
                 partial_url = mapping.get("partialURL")
 
-                # Skip if store already exists
-                if skip_existing and self._store_exists(store_id):
-                    print(f"    ⏭ Store {store_id} already in database")
-                    domain_store_count += 1
-                    continue
+                store_exists = skip_existing and self._store_exists(store_id)
 
-                print(f"    Fetching details for store {store_id} ({partial_url})...")
-                store_details = self.get_store_details(store_id)
-
-                if store_details:
-                    self._save_store_to_db(domain, store_id, partial_url, store_details)
-                    processed += 1
-                    domain_store_count += 1
-                    print(f"      ✓ {store_details.get('name', 'Unknown')} - {store_details.get('country', 'N/A')}")
+                if store_exists:
+                    print(f"    ⏭ Store {store_id} already in database (will still try recipe)")
                 else:
-                    errors += 1
+                    print(f"    Fetching details for store {store_id} ({partial_url})...")
+                    store_details = self.get_store_details(store_id)
+                    if store_details:
+                        self._save_store_to_db(domain, store_id, partial_url, store_details)
+                        processed += 1
+                        print(
+                            f"      ✓ {store_details.get('name', 'Unknown')} - {store_details.get('country', 'N/A')}")  # <-- FIX
+                    else:
+                        errors += 1
+                        continue
+
+                recipe = self.get_store_recipe(store_id)
+                if recipe:
+                    self._save_recipe_to_db(store_id, recipe)
+
 
             # Mark domain as scraped
             self._mark_domain_scraped(domain, domain_store_count)
@@ -720,7 +848,7 @@ class HoneyScraper:
         raw = f"{deal_id}|{code}|{desc}|{created}|{expires}"
         return hashlib.md5(raw.encode("utf-8")).hexdigest()
 
-    def refresh_coupons(self, refresh_hours: float = 6.0, limit: Optional[int] = None):
+    def refresh_coupons(self, refresh_hours: float = 6.0, limit: Optional[int] = None, refresh_recipes: bool = False):
         """
         Refresh coupons for stores already in DB, but only for stores whose domain
         maps to this worker's shard (domain sharding correctness).
@@ -784,6 +912,11 @@ class HoneyScraper:
                 save_coupons=True,
                 save_partial_urls=False,
             )
+            if refresh_recipes:
+                recipe = self.get_store_recipe(store_id)
+                if recipe:
+                    self._save_recipe_to_db(store_id, recipe)
+
             updated += 1
 
         print(f"Coupon refresh done: updated={updated}, errors={errors}")
@@ -804,6 +937,7 @@ def main():
     )
     parser.add_argument("--refresh-hours", type=float, default=6.0)
     parser.add_argument("--refresh-limit", type=int, default=None)
+    parser.add_argument("--refresh-recipes", action="store_true", default=False)
 
     args = parser.parse_args()
 
@@ -824,7 +958,12 @@ def main():
         return
 
     if args.mode == "refresh-coupons":
-        scraper.refresh_coupons(refresh_hours=args.refresh_hours, limit=args.refresh_limit)
+        scraper.refresh_coupons(
+            refresh_hours=args.refresh_hours,
+            limit=args.refresh_limit,
+            refresh_recipes=args.refresh_recipes
+        )
+
         scraper.print_stats()
         return
 
